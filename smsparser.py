@@ -92,48 +92,6 @@ VPF_ENHANCED = 0b01 # enhanced format, 7 bytes long
 VPF_RELATIVE = 0b10 # relative format, 1 byte long
 VPF_ABSOLUTE = 0b11 # absolute format, 7 bytes long     
 
-# Languages support 
-class LanguageSymbolSignature:
-    """
-    Description
-    -----------
-    LanguageSymbolSignature stores a list of intervals (integers)
-    Each interval represents a set of unicode characters
-    Those characters are 'typical' and the most common of the language
-        that we want to describe
-    This enables to test the likelihood for a potential parsed PDU msg
-        to be a valid message by checking if its chars belong to the 
-        language or not 
-    """
-    
-    def __init__(self, intervals=None):
-        """
-        Parameters
-        ----------
-        intervals : (int,int)
-        """
-        if( not intervals):
-            self.char_intervals = []
-        else:
-            self.char_intervals = intervals
-            
-    def belongs(self, char):
-        """
-        Description
-        -----------
-        Checks if a character belongs to the language signature
-        """
-        for interval in self.char_intervals:
-            if( ord(char) >= interval[0] and ord(char) <= interval[1]):
-                return True
-        return False
-
-# Supported languages
-LANG_UNKWN = LanguageSymbolSignature()
-LANG_LATIN = LanguageSymbolSignature([(0x20, 0x7f), (0xc0, 0x17f)]) 
-# Selected language
-language = LANG_LATIN # Default, Latin languages     
-    
 #######################
 # Utilitary functions #
 #######################
@@ -766,7 +724,7 @@ def main():
 #        How do I define my parsing functions ?
 #        -------------------------------------- 
 #
-# In order to define a parser, you first new to define parsing 
+# In order to define a parser, you first need to define parsing 
 # functions or use already defined parsing functions.
 # A parsing function MUST take 3 arguments : 
 #  - img : a string of bytes representing the binary image
@@ -1078,8 +1036,6 @@ def filter_date(sms):
 pdu_filter_classical = Filter("PDU-classical",[\
     filter_lang_latin,\
     filter_date])
-
-
 
 
 
