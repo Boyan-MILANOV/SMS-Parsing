@@ -37,14 +37,15 @@
 # Then, you simply launch the script, and a command-line-interface appears.  
 # The CLI offers several functions. You can select parsers and filters you
 # want to use on a binary image you want to analyse. . Once you selected 
-# the ones you want, simply use the 'scan' command to scan the image for 
-# SMS ! 
+# the ones you want, simply use the 'parser-run' command to scan the  
+# image for SMS ! 
 #
 #
 # This script comes with no warranty at all
 ########################################################################
 
 import sys
+import re
 
 
 # ------------------------------------------------------
@@ -140,12 +141,13 @@ def nibble_to_str(nibble_string, number=True):
         
     return res 
 
-def str_to_date(string, check=False):
+def str_to_date(string, check=True):
     """
     Description
     -----------
     Takes a PDU string and decodes it into a date string
-    If check=True the function also checks if the date is valid 
+    If check=True the function also checks if the date is valid
+    (if the date isn't valid it returns None) 
     
     Parameters
     ----------
@@ -154,9 +156,8 @@ def str_to_date(string, check=False):
     
     Return
     ------
-    Returns either
-        str - if check is false
-        (str,bool) - if check is True 
+    returns  - a date in string format
+             - or None 
     """
     try:
         day = nibble_to_str(string[2])      # Day
@@ -188,22 +189,19 @@ def str_to_date(string, check=False):
         if( not check):
             return date
         else:
-            try:
-                wrong = (int(day) > 31) or (int(month) > 12) or (int(hour) > 23)\
-                    or (int(minutes) > 59) or (int(seconds) > 59) or (int(zone) > 24)\
-                    or(int(day) < 1) or (int(month) < 1) or (int(hour) < 0)\
-                    or (int(minutes) < 0) or (int(seconds) < 0) or (int(zone) < 0) 
-            except:
-                wrong = True
-            return (date, (not wrong))
+            wrong = (int(day) > 31) or (int(month) > 12) or (int(hour) > 23)\
+                or (int(minutes) > 59) or (int(seconds) > 59) or (int(zone) > 24)\
+                or(int(day) < 1) or (int(month) < 1) or (int(hour) < 0)\
+                or (int(minutes) < 0) or (int(seconds) < 0) or (int(zone) < 0) 
+            if( wrong ):
+                return None
+            else:
+                return date
         
     except Exception as e:
-        if( check ):
-            return (None,False)
-        else:
-            return None
+        return None
  
-def str_to_date_utc(string):
+def str_to_date_utc(string, check=True):
     try:
         day = int(nibble_to_str(string[2]))      # Day
         month = int(nibble_to_str(string[1]))    # Month
@@ -248,9 +246,19 @@ def str_to_date_utc(string):
         date += ':'+"{0:02d}".format(minutes)
         date += ':'+"{0:02d}".format(seconds)
         
-        return date
+        if( not check):
+            return date
+        else:
+            wrong = (int(day) > 31) or (int(month) > 12) or (int(hour) > 23)\
+                or (int(minutes) > 59) or (int(seconds) > 59)\
+                or(int(day) < 1) or (int(month) < 1) or (int(hour) < 0)\
+                or (int(minutes) < 0) or (int(seconds) < 0) 
+            if( wrong ):
+                return None
+            else:
+                return date
         
-    except Exception as e:
+    except:
         return None
 
 # GSM7 format decoding 
@@ -267,14 +275,21 @@ def gsm7_decode(string):
 
 # Custom charging bar :) 
 last_percent = -1 
-def charging_bar( nb_iter, curr_iter, bar_len, msg="", char=u"\u2588"):
+def charging_bar( nb_iter, curr_iter, bar_len, msg="", char=u"\u2588", end_msg=''):
     """
     Print a charging bar 
     """
     global last_percent
     percent = (100*curr_iter)/nb_iter
     if( curr_iter == nb_iter ):
-        sys.stdout.write('\n')
+        bar = '\r\t% '
+        bar += str(msg)
+        bar += ' |'
+        full_part = char * bar_len
+        bar += full_part + '| '
+        bar += end_msg
+        bar += '\n'
+        sys.stdout.write(bar)
         last_percent = -1
     elif( last_percent != percent):
         last_percent = percent
@@ -316,9 +331,9 @@ class SMSGeneric:
         self.src = None # Source number
         self.dst = None # Destination number 
         self.msg = None # Message body 
-        self.date = None # SMS date in human readable format
+        self.sms_date = None # SMS date in human readable format
         self.date_utc_00 = None    # Date in UTC + 0
-        self.status = None # (Received / Sent)
+        self.sms_status = None # (Received / Sent)
 
     def date(self):
         """
@@ -345,6 +360,12 @@ class SMSGeneric:
             return self.dst
         return "Unknown"
 
+    def status(self):
+        if( self.sms_status ):
+            return self.sms_status
+        else:
+            return "Unknown"
+            
     def offset(self):
         return self.bin_offset
         
@@ -369,7 +390,16 @@ class SMSGeneric:
         # Status
         output.append(self.status())
         # Number
-        
+        if( self.status == "Received" ):
+            output.append(self.source())
+        elif( self.status == "Sent" ):
+            output.append(self.dest())
+        elif( self.src ):
+            output.append(self.source())
+        elif( self.dst ):
+            output.append(self.dest())
+        else:
+            output.append("Unknown")
         # Data
         output.append(remove_control_chars(self.message()))
         # Date
@@ -479,12 +509,21 @@ class Parser:
         
         res = []
         for i in range(0,len(img)):
-            charging_bar(len(img)-1, i, 20, msg="Parser '{}': ".format(self.name))
+            charging_bar(len(img)-1, i, 20, msg="Parser '{}': ".format(self.name),\
+                end_msg = "{} SMS found".format(len(res)))
             sms = new_sms(self.sms_type)
+            sms.bin_offset = i
+            offset = 0
             for func in self.parse_functions:
-                if( not func(img, i, sms)):
+                if( i+offset >= len(img)):
                     sms = None
                     break
+                parsed_bytes = func(img, i+offset, sms)
+                if( parsed_bytes == ERROR):
+                    sms = None
+                    break
+                else:
+                    offset += parsed_bytes 
             if( sms ):
                 res.append(sms)
         return res
@@ -503,9 +542,13 @@ class Filter:
         global_filter_refs.append(self)
         
     def filter(self, sms_list):
+        msg = "\t% Filter '{}': {} -> ".format(self.name, len(sms_list))
         tmp = sms_list
         for func in self.filter_functions:
             tmp = [sms for sms in tmp if func(sms)]
+        msg += "{} SMS".format(len(tmp))
+        print(msg)
+        return tmp
 
         
 
@@ -526,6 +569,7 @@ def parse(parsers, img):
     res = []
     for parser in parsers:
         res += parser.parse(img)
+    return res
 
 def filter_sms(filter_list, sms_list):
     tmp = sms_list
@@ -534,18 +578,50 @@ def filter_sms(filter_list, sms_list):
     return tmp
         
 # Commands
-CMD_FILTER_SELECT = "filter-select"
-CMD_FILTER_SELECT_SHORT = "fs"
+CMD_LOAD = "load"
+CMD_LOAD_SHORT = "l"
+image_string = []
+def load(filename):
+    global image_string
+    # Read the binary 
+    try:
+        f = open(filename, "rb")
+        image_string = f.read()  
+        print("\n\t% Loaded file: " + filename) 
+    except:
+        print("\t% Error: could not read binary")
+        return 
+
+
+CMD_FILTER_SELECT = "filter-apply"
+CMD_FILTER_SELECT_SHORT = "fa"
 selected_filters = []
+filter_result = []
 def filter_select(filter_numbers):    
     global global_filter_refs
     global selected_filters
+    global scan_result
+    global filter_result
+    
     selected_filters = []
+    filter_result = scan_result
+    print('')
+    if( len(filter_numbers) == 0 ):
+        print("\t% Unselected all filters")
+        return 
+    elif( len(filter_result) == 0 ):
+        print("\t% No SMS to filter")
+        return 
     for num_arg in filter_numbers:
-        num = int(num_arg)
+        try:
+            num = int(num_arg)
+        except:
+            num = 9999
         if( num >= len(global_filter_refs)):
-            print("Ignored invalid filter number: {}".format(num))
+            print("\t% Ignored invalid filter number: {}".format(num_arg))
         else:
+            # Filter it
+            filter_result = global_filter_refs[num].filter(filter_result)
             selected_filters.append( num )
     selected_filters = list(set(selected_filters))
 
@@ -569,22 +645,7 @@ def filter_list():
         else:
             selected = '  ' 
         print("\t{}.\t{}{}".format(i, selected, global_filter_refs[i].name))
-
-
-CMD_PARSER_SELECT = "parser-select"
-CMD_PARSER_SELECT_SHORT = "ps"
-selected_parsers = []
-def parser_select(parser_numbers):    
-    global global_parser_refs
-    global selected_parsers
-    selected_parsers = []
-    for num_arg in parser_numbers:
-        num = int(num_arg)
-        if( num >= len(global_parser_refs)):
-            print("Ignored invalid parser number: {}".format(num))
-        else:
-            selected_parsers.append (num )
-    selected_parsers = list(set(selected_parsers))        
+       
 
 CMD_PARSER_LIST = "parser-list"
 CMD_PARSER_LIST_SHORT = "pl"
@@ -618,21 +679,20 @@ def show_help():
     print("\t"+bold("SMS-Tool-Kit commands"))
     print("\t---------------------------\n")  
 
-    print("\n\t"+bold(CMD_FILTER_LIST)+', '+bold(CMD_FILTER_LIST_SHORT)+\
-        ":\tShow available SMS filters")
-    print("\n\t"+bold(CMD_FILTER_SELECT)+', '+bold(CMD_FILTER_SELECT_SHORT)+\
-        ":\tSelect SMS filters"+\
-        "\n\t\t\t\t"+bold("Usage: ")+CMD_FILTER_SELECT_SHORT+" <filter_num> [<filter_nums>]")
+    print("\n\t"+bold(CMD_LOAD)+', '+bold(CMD_LOAD_SHORT)+\
+        ":\t\tLoad a binary image to parse")
     
     print("\n\t"+bold(CMD_PARSER_LIST)+', '+bold(CMD_PARSER_LIST_SHORT)+\
         ":\tShow available SMS parsers")
-    print("\n\t"+bold(CMD_PARSER_SELECT)+', '+bold(CMD_PARSER_SELECT_SHORT)+\
-        ":\tSelect SMS parsers"+\
-        "\n\t\t\t\t"+bold("Usage: ")+CMD_PARSER_SELECT_SHORT+" <parser_num> [<parser_nums>]")   
-        
-    print("\n\t"+bold(CMD_SCAN)+', '+bold(CMD_SCAN_SHORT)+\
-        ":\t\tRun the selected parsers on a raw file"+\
-        "\n\t\t\t\t"+bold("Usage: ")+CMD_SCAN_SHORT+" <filename>") 
+    print("\n\t"+bold(CMD_PARSER_RUN)+', '+bold(CMD_PARSER_RUN_SHORT)+\
+        ":\t\tRun parsers on the loaded image"+\
+        "\n\t\t\t\t"+bold("Usage: ")+CMD_PARSER_RUN_SHORT+" <parser_num> [<parser_nums>]") 
+    
+    print("\n\t"+bold(CMD_FILTER_LIST)+', '+bold(CMD_FILTER_LIST_SHORT)+\
+        ":\tShow available SMS filters")
+    print("\n\t"+bold(CMD_FILTER_SELECT)+', '+bold(CMD_FILTER_SELECT_SHORT)+\
+        ":\tApply SMS filters"+\
+        "\n\t\t\t\t"+bold("Usage: ")+CMD_FILTER_SELECT_SHORT+" <filter_num> [<filter_nums>]")
     
     print("\n\t"+bold(CMD_HELP)+', '+bold(CMD_HELP_SHORT)+\
         ":\t\tShow this help")
@@ -640,27 +700,57 @@ def show_help():
     print("\n\t"+bold(CMD_QUIT)+', '+bold(CMD_QUIT_SHORT)+\
         ":\t\tQuit the SMS-Tool-Kit")
  
-CMD_SCAN = "scan"
-CMD_SCAN_SHORT = "s"
-def scan(filename):
+CMD_PARSER_RUN = "parser-run"
+CMD_PARSER_RUN_SHORT = "pr"
+selected_parsers = []
+scan_result = [] # List of parsed SMS
+def parser_run(parser_numbers):
     global selected_parsers
     global global_parser_refs
-    global global_filter_refs
+    global scan_result
+    global filter_result
+    global image_string
     
-    # Read the binary 
-    try:
-        print("\n\t% Reading file: " + filename) 
-        f = open(filename, "rb")
-        image_string = f.read()  
-    except:
-        print("\t% Error: could not read binary")
-        return 
-       
-    # Parse it
+    selected_parsers = []
     res = []
-    for parser_num in selected_parsers:
-        res += global_parser_refs[parser_num].parse(image_string)
+    if( not image_string ):
+        print("You must load a binary before running parsers :) ")
+        return
+    print('')
+    for num_arg in parser_numbers:
+        try:
+            num = int(num_arg)
+        except:
+            num = 9999
+        if( num >= len(global_parser_refs)):
+            print("\t% Ignored invalid parser number: {}".format(num_arg))
+        else:
+            res += global_parser_refs[num].parse(image_string)
+            selected_parsers.append (num )
+    
+    selected_parsers = list(set(selected_parsers))
+    scan_result = res
+    filter_result = res
+    print(bold("\t% Found {} SMS".format(len(res))))
         
+    
+CMD_EXPORT_EXCEL = "export-excel"
+CMD_EXPORT_EXCEL_SHORT = "ee"
+def export_excel(filename):
+    global filter_result
+    try:
+        import openpyxl
+    except:
+        print("\tError: package 'openpyxl' missing, could not export sms")
+        exit(1)
+        
+    out = openpyxl.Workbook()
+    out.active.title = "SMS Scan Results"
+    out.active.append(["Offset in binary", "Status", "Number", "Data", "Date (DD:MM:YYYY HH:MM:SS UTC)", "Date (UTC+00)"])
+    for sms in filter_result:
+        out.active.append(sms.excel_output())
+    out.save(filename)
+    print("{} SMS saved in file: {}".format(str(len(filter_result)), filename))
     
     
 def main():
@@ -671,29 +761,34 @@ def main():
         if( not user_args ):
             continue
         command = user_args[0]
-        if( command in [CMD_FILTER_LIST, CMD_FILTER_LIST_SHORT] ):
+        if( command in [CMD_LOAD_SHORT, CMD_LOAD]):
+            if( len(user_args) >= 2 ):
+                load(user_args[1])
+            else:
+                print("Missing filename")
+        elif( command in [CMD_FILTER_LIST, CMD_FILTER_LIST_SHORT] ):
             filter_list()
         elif( command in [CMD_PARSER_LIST, CMD_PARSER_LIST_SHORT]):
             parser_list()
-        elif( command in [CMD_PARSER_SELECT, CMD_PARSER_SELECT_SHORT]):
+        elif( command in [CMD_PARSER_RUN, CMD_PARSER_RUN_SHORT]):
             if( len(user_args) >= 2 ):
-                parser_select(user_args[1:])
+                parser_run(user_args[1:])
             else:
                 print("Missing parser numbers")
         elif( command in [CMD_FILTER_SELECT, CMD_FILTER_SELECT_SHORT]):
             if( len(user_args) >= 2 ):
                 filter_select(user_args[1:])
             else:
-                print("Missing filter numbers")
+                filter_select([])
         elif( command in [CMD_QUIT, CMD_QUIT_SHORT]):
             finish = True
         elif( command in [CMD_HELP, CMD_HELP_SHORT]):
             show_help()
-        elif( command in [CMD_SCAN, CMD_SCAN_SHORT]):
+        elif( command in [CMD_EXPORT_EXCEL, CMD_EXPORT_EXCEL_SHORT]):
             if( len(user_args) >= 2 ):
-                scan(user_args[1])
+                export_excel(user_args[1])
             else:
-                print("Missing file to scan")
+                print("Missing excel file name")
         else:
             print('Unknown command')
 
@@ -762,6 +857,7 @@ def parse_pdu_submit_header(img, ind, sms):
     if( sms.mti() != MTI_SUBMIT ):
         return ERROR
     else:
+        sms.sms_status = "Sent"
         return 1
 
 def parse_pdu_submit_mr(img,ind,sms):
@@ -787,7 +883,7 @@ def parse_pdu_submit_vp(img, ind, sms):
             return ERROR
         sms.tp_vp = img[ind:ind+7+1]
         return 7
-        (sms.sms_date,sms.valid_date) = str_to_date(sms.vp(),check=True)
+        sms.sms_date = str_to_date(sms.vp(),check=True)
         sms.date_utc_00 = str_to_date_utc(sms.vp())
     elif( sms.vpf() == VPF_RELATIVE ):
         if( ind > len(img)-1):
@@ -823,7 +919,7 @@ def parse_pdu_addr(img, ind, sms):
     """
     
     
-     # Get the addr length in octets 
+     # Get the addr length in octets
     addr_len = (ord(img[ind])+1)/2
     if( addr_len > 12 ):
         return ERROR
@@ -848,11 +944,9 @@ def parse_pdu_addr(img, ind, sms):
     if( ton == TON_INTERNATIONAL ):
         num = "+"+num
     if( sms.mti() == MTI_SUBMIT ):
-        sms.da = nibbles
-        sms.da_pretty = num
+        sms.dst = num
     elif( sms.mti() == MTI_DELIVER ):
-        sms.oa = nibbles
-        sms.oa_pretty = num
+        sms.src = num
     return addr_len+2
  
 def parse_pdu_user_data(img, ind, sms):
@@ -869,11 +963,11 @@ def parse_pdu_user_data(img, ind, sms):
         return False
     sms.tp_ud = img[ind:ind+sms.udl()]
     if( sms.data_format() in DCS_ASCII8 ):
-        sms.ud_decoded = sms.ud().decode('ascii', errors='replace')[:sms.udl()]
+        sms.msg = sms.ud().decode('ascii', errors='replace')[:sms.udl()]
     elif( sms.data_format() in DCS_UCS2 ):
-        sms.ud_decoded = sms.ud().decode('utf-16', errors='replace')[:sms.udl()]
+        sms.msg = sms.ud().decode('utf-16', errors='replace')[:sms.udl()]
     elif( sms.data_format() in DCS_GSM7 ):
-        sms.ud_decoded = gsm7_decode(sms.ud())[:sms.udl()]
+        sms.msg = gsm7_decode(sms.ud())[:sms.udl()]
     else:
         return False
     
@@ -887,6 +981,7 @@ def parse_pdu_deliver_header(img,ind,sms):
     if( sms.mti() != MTI_DELIVER ):
         return ERROR
     else:
+        sms.sms_status = "Received"
         return 1
         
 def parse_pdu_deliver_scts(img, ind, sms):
@@ -894,7 +989,7 @@ def parse_pdu_deliver_scts(img, ind, sms):
     if( ind > len(img)-7):
         return ERROR
     sms.tp_scts = img[ind:ind+7+1]
-    (sms.sms_date,sms.valid_date) = str_to_date(sms.scts(),check=True)
+    sms.sms_date = str_to_date(sms.scts(),check=True)
     sms.date_utc_00 = str_to_date_utc(sms.scts())
     return 7 
 
@@ -1007,16 +1102,18 @@ def filter_lang_latin(sms):
     -------
     True | False
     """
+    if( len(sms.message()) == 0 ):
+        return False
     percentage = 0.92
     yes = 0
     no = 0
-    lang = languageSymbolSignature([(0x20, 0x7f), (0xc0, 0x17f)]) 
-    for char in sms.msg():
+    lang = LanguageSymbolSignature([(0x20, 0x7f), (0xc0, 0x17f)]) 
+    for char in sms.message():
         if( lang.belongs(char)):
             yes = yes + 1
         else:
             no = no + 1
-    p = float(yes)/float(len(sms.data()))
+    p = float(yes)/float(len(sms.message()))
     if( p > percentage ):
         return True
     else:
@@ -1028,7 +1125,7 @@ def filter_date(sms):
     -----------
     Filters only SMS that have a valid date
     """
-    return sms.valid_date
+    return sms.sms_date != None
 
 
 # Declare your filters here
