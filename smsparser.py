@@ -694,6 +694,10 @@ def show_help():
         ":\tApply SMS filters"+\
         "\n\t\t\t\t"+bold("Usage: ")+CMD_FILTER_SELECT_SHORT+" <filter_num> [<filter_nums>]")
     
+    print("\n\t"+bold(CMD_EXPORT_EXCEL)+', '+bold(CMD_EXPORT_EXCEL_SHORT)+\
+        ":\tExport SMS in an excel file"+\
+        "\n\t\t\t\t"+bold("Usage: ")+CMD_EXPORT_EXCEL_SHORT+" <filename>")
+    
     print("\n\t"+bold(CMD_HELP)+', '+bold(CMD_HELP_SHORT)+\
         ":\t\tShow this help")
     
