@@ -237,6 +237,27 @@ def str_to_date_utc(string, check=True):
                     day = 31
                     month = 12
                     year -= 1
+        elif( hour > 23 ):
+            hour -= 24
+            day += 1
+            if( month in [1,3, 5, 7, 8, 10, 12] ):
+                if( day > 31 ):
+                    day -= 31
+                    month += 1 % 12
+            elif( month in [4,6,9,11] ):
+                if( day > 31 ):
+                    day -= 30
+                    month += 1
+            elif( month == 2 ):
+                if( year%400 == 0 or (year%4 == 0 and year%100 != 0)):
+                    limit = 29
+                else:
+                    limit = 28
+                if( day > limit ):
+                    month = 3
+                    day = day - limit
+                
+                
         # Build date string 
         date = ''
         date += "{0:02d}".format(day)
